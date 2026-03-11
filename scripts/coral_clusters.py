@@ -11,6 +11,7 @@ CLUSTER_SCALE_RANGE = (0.85, 1.3)
 PATCH_RANDOM_SEED = None
 BEVEL_WIDTH_RANGE = (0.008, 0.02)
 SUBSURF_LEVELS = 1
+TUBE_CLUSTER_RATIO = 0.6
 MATERIAL_PALETTES = (
     ((0.86, 0.39, 0.32, 1.0), (0.96, 0.78, 0.56, 1.0)),
     ((0.73, 0.31, 0.52, 1.0), (0.96, 0.67, 0.74, 1.0)),
@@ -283,132 +284,7 @@ def make_stalk_geometry(
     return vertices, faces
 
 
-def make_plate_geometry(radius, sides, height):
-    vertices = [(0.0, 0.0, 0.0)]
-    faces = []
-
-    for index in range(sides):
-        angle = (math.tau * index) / sides
-        rim_radius = radius * (0.82 + 0.18 * math.sin(angle * 3.0))
-        vertices.append((math.cos(angle) * rim_radius, math.sin(angle) * rim_radius, height))
-
-    for index in range(sides):
-        next_index = 1 + ((index + 1) % sides)
-        faces.append((0, next_index, 1 + index))
-
-    return vertices, faces
-
-
-def create_coral_cluster_mesh(name, rng):
-    mesh = bpy.data.meshes.new(f"{name}_Mesh")
-    obj = bpy.data.objects.new(name, mesh)
-
-    vertices = []
-    faces = []
-
-    mound_vertices, mound_faces = make_mound_geometry(
-        radius_x=rng.uniform(0.45, 0.9),
-        radius_y=rng.uniform(0.4, 0.85),
-        height=rng.uniform(0.22, 0.45),
-        sides=rng.randint(9, 12),
-    )
-    append_transformed_geometry(vertices, faces, mound_vertices, mound_faces)
-
-    finger_count = rng.randint(4, 7)
-    for index in range(finger_count):
-        angle = (math.tau * index) / finger_count + rng.uniform(-0.4, 0.4)
-        distance = rng.uniform(0.05, 0.34)
-        offset = (math.cos(angle) * distance, math.sin(angle) * distance, rng.uniform(0.05, 0.12))
-        stalk_vertices, stalk_faces = make_stalk_geometry(
-            height=rng.uniform(0.55, 1.35),
-            base_radius=rng.uniform(0.08, 0.15),
-            tip_radius=rng.uniform(0.035, 0.08),
-            sides=rng.randint(6, 8),
-            segments=rng.randint(4, 5),
-            flare=rng.uniform(-0.3, 0.3),
-            curve_phase=rng.uniform(0.0, math.tau),
-            bend=(rng.uniform(-0.14, 0.14), rng.uniform(-0.14, 0.14)),
-            bulge=rng.uniform(0.0, 0.03),
-            ripple=rng.uniform(0.01, 0.05),
-        )
-        append_transformed_geometry(
-            vertices,
-            faces,
-            stalk_vertices,
-            stalk_faces,
-            offset=offset,
-            rotation=(rng.uniform(-0.12, 0.12), rng.uniform(-0.12, 0.12), rng.uniform(0.0, math.tau)),
-        )
-
-        if rng.random() < 0.45:
-            branch_offset = (
-                offset[0] + rng.uniform(-0.06, 0.06),
-                offset[1] + rng.uniform(-0.06, 0.06),
-                offset[2] + rng.uniform(0.28, 0.62),
-            )
-            branch_vertices, branch_faces = make_stalk_geometry(
-                height=rng.uniform(0.25, 0.6),
-                base_radius=rng.uniform(0.03, 0.07),
-                tip_radius=rng.uniform(0.015, 0.04),
-                sides=rng.randint(5, 7),
-                segments=3,
-                flare=rng.uniform(-0.22, 0.22),
-                curve_phase=rng.uniform(0.0, math.tau),
-                bend=(rng.uniform(-0.18, 0.18), rng.uniform(-0.18, 0.18)),
-                bulge=rng.uniform(0.0, 0.015),
-                ripple=rng.uniform(0.0, 0.04),
-            )
-            append_transformed_geometry(
-                vertices,
-                faces,
-                branch_vertices,
-                branch_faces,
-                offset=branch_offset,
-                rotation=(rng.uniform(-0.5, 0.5), rng.uniform(-0.5, 0.5), rng.uniform(0.0, math.tau)),
-            )
-
-    tube_count = rng.randint(3, 5)
-    for _ in range(tube_count):
-        angle = rng.uniform(0.0, math.tau)
-        distance = rng.uniform(0.1, 0.42)
-        offset = (math.cos(angle) * distance, math.sin(angle) * distance, rng.uniform(0.04, 0.1))
-        stalk_vertices, stalk_faces = make_stalk_geometry(
-            height=rng.uniform(0.8, 1.55),
-            base_radius=rng.uniform(0.09, 0.17),
-            tip_radius=rng.uniform(0.055, 0.11),
-            sides=rng.randint(7, 9),
-            segments=rng.randint(5, 6),
-            flare=rng.uniform(-0.18, 0.18),
-            curve_phase=rng.uniform(0.0, math.tau),
-            bend=(rng.uniform(-0.09, 0.09), rng.uniform(-0.09, 0.09)),
-            bulge=rng.uniform(0.01, 0.04),
-            lip=rng.uniform(0.05, 0.14),
-            ripple=rng.uniform(0.015, 0.05),
-        )
-        append_transformed_geometry(
-            vertices,
-            faces,
-            stalk_vertices,
-            stalk_faces,
-            offset=offset,
-            rotation=(rng.uniform(-0.08, 0.08), rng.uniform(-0.08, 0.08), rng.uniform(0.0, math.tau)),
-        )
-
-        plate_vertices, plate_faces = make_plate_geometry(
-            radius=rng.uniform(0.12, 0.24),
-            sides=rng.randint(8, 10),
-            height=rng.uniform(0.02, 0.06),
-        )
-        append_transformed_geometry(
-            vertices,
-            faces,
-            plate_vertices,
-            plate_faces,
-            offset=(offset[0], offset[1], offset[2] + rng.uniform(0.68, 1.38)),
-            rotation=(rng.uniform(-0.2, 0.2), rng.uniform(-0.2, 0.2), rng.uniform(0.0, math.tau)),
-        )
-
-    mesh.from_pydata(vertices, [], faces)
+def finish_coral_mesh(obj, mesh, rng, name):
     mesh.update()
     mesh.polygons.foreach_set("use_smooth", [True] * len(mesh.polygons))
 
@@ -427,13 +303,93 @@ def create_coral_cluster_mesh(name, rng):
     return obj
 
 
+def create_mound_coral_mesh(name, rng):
+    mesh = bpy.data.meshes.new(f"{name}_Mesh")
+    obj = bpy.data.objects.new(name, mesh)
+
+    vertices = []
+    faces = []
+
+    mound_count = rng.randint(2, 4)
+    for _ in range(mound_count):
+        angle = rng.uniform(0.0, math.tau)
+        distance = rng.uniform(0.0, 0.45)
+        mound_vertices, mound_faces = make_mound_geometry(
+            radius_x=rng.uniform(0.38, 0.95),
+            radius_y=rng.uniform(0.34, 0.88),
+            height=rng.uniform(0.2, 0.55),
+            sides=rng.randint(9, 13),
+        )
+        append_transformed_geometry(
+            vertices,
+            faces,
+            mound_vertices,
+            mound_faces,
+            offset=(math.cos(angle) * distance, math.sin(angle) * distance, rng.uniform(-0.02, 0.04)),
+            rotation=(0.0, 0.0, rng.uniform(0.0, math.tau)),
+        )
+
+    mesh.from_pydata(vertices, [], faces)
+    return finish_coral_mesh(obj, mesh, rng, name)
+
+
+def create_tube_coral_mesh(name, rng):
+    mesh = bpy.data.meshes.new(f"{name}_Mesh")
+    obj = bpy.data.objects.new(name, mesh)
+
+    vertices = []
+    faces = []
+
+    base_vertices, base_faces = make_mound_geometry(
+        radius_x=rng.uniform(0.4, 0.82),
+        radius_y=rng.uniform(0.36, 0.78),
+        height=rng.uniform(0.16, 0.34),
+        sides=rng.randint(9, 12),
+    )
+    append_transformed_geometry(vertices, faces, base_vertices, base_faces)
+
+    tube_count = rng.randint(4, 8)
+    for _ in range(tube_count):
+        angle = rng.uniform(0.0, math.tau)
+        distance = rng.uniform(0.04, 0.4)
+        offset = (math.cos(angle) * distance, math.sin(angle) * distance, rng.uniform(0.02, 0.08))
+        stalk_vertices, stalk_faces = make_stalk_geometry(
+            height=rng.uniform(0.9, 1.8),
+            base_radius=rng.uniform(0.09, 0.18),
+            tip_radius=rng.uniform(0.06, 0.13),
+            sides=rng.randint(7, 10),
+            segments=rng.randint(5, 7),
+            flare=rng.uniform(-0.16, 0.16),
+            curve_phase=rng.uniform(0.0, math.tau),
+            bend=(rng.uniform(-0.08, 0.08), rng.uniform(-0.08, 0.08)),
+            bulge=rng.uniform(0.01, 0.05),
+            lip=rng.uniform(0.06, 0.16),
+            ripple=rng.uniform(0.015, 0.055),
+        )
+        append_transformed_geometry(
+            vertices,
+            faces,
+            stalk_vertices,
+            stalk_faces,
+            offset=offset,
+            rotation=(rng.uniform(-0.06, 0.06), rng.uniform(-0.06, 0.06), rng.uniform(0.0, math.tau)),
+        )
+
+    mesh.from_pydata(vertices, [], faces)
+    return finish_coral_mesh(obj, mesh, rng, name)
+
+
 def build_coral_patch():
     collection = clear_collection_objects(COLLECTION_NAME)
     rng = random.Random(PATCH_RANDOM_SEED)
     half_area = PATCH_AREA_SIZE * 0.5
 
     for index in range(CLUSTER_COUNT):
-        obj = create_coral_cluster_mesh(f"Coral_{index:02d}", rng)
+        coral_type = "tube" if rng.random() < TUBE_CLUSTER_RATIO else "mound"
+        if coral_type == "tube":
+            obj = create_tube_coral_mesh(f"Tube_Coral_{index:02d}", rng)
+        else:
+            obj = create_mound_coral_mesh(f"Mound_Coral_{index:02d}", rng)
         scale = rng.uniform(*CLUSTER_SCALE_RANGE)
 
         obj.location = (
@@ -448,6 +404,7 @@ def build_coral_patch():
         )
         obj.scale = (scale, scale, scale)
         obj["cluster_seed"] = rng.random()
+        obj["coral_type"] = coral_type
 
         collection.objects.link(obj)
 
