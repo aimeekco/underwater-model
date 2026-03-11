@@ -12,6 +12,7 @@ PATCH_RANDOM_SEED = None
 BEVEL_WIDTH_RANGE = (0.008, 0.02)
 SUBSURF_LEVELS = 1
 TUBE_CLUSTER_RATIO = 0.6
+BRAIN_CLUSTER_RATIO = 0.18
 MATERIAL_PALETTES = (
     ((0.86, 0.39, 0.32, 1.0), (0.96, 0.78, 0.56, 1.0)),
     ((0.73, 0.31, 0.52, 1.0), (0.96, 0.67, 0.74, 1.0)),
@@ -284,6 +285,62 @@ def make_stalk_geometry(
     return vertices, faces
 
 
+def make_brain_coral_geometry(radius_x, radius_y, height, rings, sides, groove_depth, groove_frequency, phase):
+    vertices = [(0.0, 0.0, 0.0)]
+    faces = []
+    ring_starts = []
+
+    for ring_index in range(1, rings + 1):
+        t = ring_index / rings
+        dome = math.sin(t * math.pi * 0.5)
+        z = (math.sin(t * math.pi * 0.5) ** 1.6) * height
+        ring_starts.append(len(vertices))
+
+        for side in range(sides):
+            angle = (math.tau * side) / sides
+            groove = math.sin((angle + phase) * groove_frequency + (t * math.pi * 2.4))
+            groove_scale = 1.0 + groove * groove_depth
+            radial_scale = dome * groove_scale
+            twist = math.sin((t * math.pi * 2.0) + phase) * 0.08
+            warped_angle = angle + twist
+            vertices.append(
+                (
+                    math.cos(warped_angle) * radius_x * radial_scale,
+                    math.sin(warped_angle) * radius_y * radial_scale,
+                    z,
+                )
+            )
+
+    top_index = len(vertices)
+    vertices.append((0.0, 0.0, height))
+
+    first_ring_start = ring_starts[0]
+    for side in range(sides):
+        next_side = (side + 1) % sides
+        faces.append((0, first_ring_start + next_side, first_ring_start + side))
+
+    for ring_index in range(len(ring_starts) - 1):
+        current_start = ring_starts[ring_index]
+        next_start = ring_starts[ring_index + 1]
+        for side in range(sides):
+            next_side = (side + 1) % sides
+            faces.append(
+                (
+                    current_start + side,
+                    current_start + next_side,
+                    next_start + next_side,
+                    next_start + side,
+                )
+            )
+
+    last_ring_start = ring_starts[-1]
+    for side in range(sides):
+        next_side = (side + 1) % sides
+        faces.append((last_ring_start + side, last_ring_start + next_side, top_index))
+
+    return vertices, faces
+
+
 def finish_coral_mesh(obj, mesh, rng, name):
     mesh.update()
     mesh.polygons.foreach_set("use_smooth", [True] * len(mesh.polygons))
@@ -379,15 +436,66 @@ def create_tube_coral_mesh(name, rng):
     return finish_coral_mesh(obj, mesh, rng, name)
 
 
+def create_brain_coral_mesh(name, rng):
+    mesh = bpy.data.meshes.new(f"{name}_Mesh")
+    obj = bpy.data.objects.new(name, mesh)
+
+    vertices = []
+    faces = []
+
+    mound_vertices, mound_faces = make_mound_geometry(
+        radius_x=rng.uniform(0.36, 0.72),
+        radius_y=rng.uniform(0.34, 0.68),
+        height=rng.uniform(0.12, 0.24),
+        sides=rng.randint(9, 12),
+    )
+    append_transformed_geometry(vertices, faces, mound_vertices, mound_faces)
+
+    lobe_count = rng.randint(1, 3)
+    for _ in range(lobe_count):
+        angle = rng.uniform(0.0, math.tau)
+        distance = rng.uniform(0.0, 0.18)
+        brain_vertices, brain_faces = make_brain_coral_geometry(
+            radius_x=rng.uniform(0.42, 0.82),
+            radius_y=rng.uniform(0.38, 0.76),
+            height=rng.uniform(0.35, 0.7),
+            rings=rng.randint(5, 7),
+            sides=rng.randint(14, 18),
+            groove_depth=rng.uniform(0.08, 0.16),
+            groove_frequency=rng.uniform(5.0, 8.0),
+            phase=rng.uniform(0.0, math.tau),
+        )
+        append_transformed_geometry(
+            vertices,
+            faces,
+            brain_vertices,
+            brain_faces,
+            offset=(math.cos(angle) * distance, math.sin(angle) * distance, rng.uniform(0.02, 0.06)),
+            rotation=(rng.uniform(-0.04, 0.04), rng.uniform(-0.04, 0.04), rng.uniform(0.0, math.tau)),
+        )
+
+    mesh.from_pydata(vertices, [], faces)
+    return finish_coral_mesh(obj, mesh, rng, name)
+
+
 def build_coral_patch():
     collection = clear_collection_objects(COLLECTION_NAME)
     rng = random.Random(PATCH_RANDOM_SEED)
     half_area = PATCH_AREA_SIZE * 0.5
 
     for index in range(CLUSTER_COUNT):
-        coral_type = "tube" if rng.random() < TUBE_CLUSTER_RATIO else "mound"
+        roll = rng.random()
+        if roll < TUBE_CLUSTER_RATIO:
+            coral_type = "tube"
+        elif roll < TUBE_CLUSTER_RATIO + BRAIN_CLUSTER_RATIO:
+            coral_type = "brain"
+        else:
+            coral_type = "mound"
+
         if coral_type == "tube":
             obj = create_tube_coral_mesh(f"Tube_Coral_{index:02d}", rng)
+        elif coral_type == "brain":
+            obj = create_brain_coral_mesh(f"Brain_Coral_{index:02d}", rng)
         else:
             obj = create_mound_coral_mesh(f"Mound_Coral_{index:02d}", rng)
         scale = rng.uniform(*CLUSTER_SCALE_RANGE)

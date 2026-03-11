@@ -5,8 +5,8 @@ import bpy
 
 
 COLLECTION_NAME = "Procedural_Seaweed"
-PATCH_COUNT = 10
-PATCH_AREA_SIZE = 5.0
+PATCH_COUNT = 30
+PATCH_AREA_SIZE = 10.0
 HEIGHT_RANGE = (1.8, 3.4)
 WIDTH_RANGE = (0.14, 0.5)
 SEGMENT_RANGE = (8, 12)
@@ -14,6 +14,11 @@ NOISE_SCALE_RANGE = (0.18, 0.42)
 SCALE_RANGE = (0.9, 1.35)
 LEAN_RANGE = (-0.06, 0.06)
 PATCH_RANDOM_SEED = None
+SEAWEED_PALETTES = (
+    ((0.08, 0.17, 0.08, 1.0), (0.29, 0.46, 0.17, 1.0)),
+    ((0.1, 0.22, 0.12, 1.0), (0.42, 0.57, 0.2, 1.0)),
+    ((0.07, 0.16, 0.13, 1.0), (0.26, 0.42, 0.24, 1.0)),
+)
 
 ACTIVE_CURVATURE = {
     "phase": 0.0,
@@ -42,17 +47,131 @@ def ensure_collection(name):
 def clear_collection_objects(collection_name):
     collection = ensure_collection(collection_name)
     owned_meshes = []
+    owned_materials = []
 
     for obj in list(collection.objects):
         if obj.type == "MESH" and obj.data is not None:
             owned_meshes.append(obj.data)
+            owned_materials.extend(material for material in obj.data.materials if material is not None)
         bpy.data.objects.remove(obj, do_unlink=True)
 
     for mesh in owned_meshes:
         if mesh.users == 0:
             bpy.data.meshes.remove(mesh)
 
+    for material in owned_materials:
+        if material.users == 0:
+            bpy.data.materials.remove(material)
+
     return collection
+
+
+def set_node_input(node, socket_names, value):
+    for socket_name in socket_names:
+        socket = node.inputs.get(socket_name)
+        if socket is not None:
+            socket.default_value = value
+            return
+
+
+def build_seaweed_material(name, rng):
+    material = bpy.data.materials.new(name=name)
+    material.use_nodes = True
+    nodes = material.node_tree.nodes
+    links = material.node_tree.links
+    nodes.clear()
+
+    output = nodes.new(type="ShaderNodeOutputMaterial")
+    output.location = (620, 0)
+
+    principled = nodes.new(type="ShaderNodeBsdfPrincipled")
+    principled.location = (340, 0)
+    set_node_input(principled, ("Roughness",), rng.uniform(0.42, 0.62))
+    set_node_input(principled, ("Subsurface Weight", "Subsurface"), rng.uniform(0.04, 0.1))
+    set_node_input(principled, ("Subsurface Radius",), (0.4, 0.85, 0.2))
+    set_node_input(principled, ("Specular IOR Level", "Specular"), rng.uniform(0.22, 0.34))
+
+    coord = nodes.new(type="ShaderNodeTexCoord")
+    coord.location = (-1120, 0)
+
+    mapping = nodes.new(type="ShaderNodeMapping")
+    mapping.location = (-920, 0)
+    mapping.inputs["Scale"].default_value = (
+        rng.uniform(1.2, 1.8),
+        rng.uniform(1.2, 1.8),
+        rng.uniform(0.8, 1.2),
+    )
+
+    separate_xyz = nodes.new(type="ShaderNodeSeparateXYZ")
+    separate_xyz.location = (-730, -250)
+
+    height_ramp = nodes.new(type="ShaderNodeMapRange")
+    height_ramp.location = (-500, -250)
+    height_ramp.inputs["From Min"].default_value = -0.2
+    height_ramp.inputs["From Max"].default_value = 3.8
+    height_ramp.inputs["To Min"].default_value = 0.18
+    height_ramp.inputs["To Max"].default_value = 0.95
+
+    wave = nodes.new(type="ShaderNodeTexWave")
+    wave.location = (-720, 120)
+    wave.wave_type = "BANDS"
+    wave.bands_direction = "Z"
+    wave.inputs["Scale"].default_value = rng.uniform(5.0, 8.0)
+    wave.inputs["Distortion"].default_value = rng.uniform(2.0, 4.5)
+    wave.inputs["Detail"].default_value = rng.uniform(3.0, 6.0)
+    wave.inputs["Detail Scale"].default_value = 1.6
+
+    noise = nodes.new(type="ShaderNodeTexNoise")
+    noise.location = (-720, 320)
+    noise.inputs["Scale"].default_value = rng.uniform(4.0, 7.0)
+    noise.inputs["Detail"].default_value = rng.uniform(5.0, 8.5)
+    noise.inputs["Roughness"].default_value = 0.52
+
+    mix_value = nodes.new(type="ShaderNodeMath")
+    mix_value.location = (-500, 120)
+    mix_value.operation = "MULTIPLY"
+
+    color_mix = nodes.new(type="ShaderNodeMixRGB")
+    color_mix.location = (-270, 20)
+    color_mix.blend_type = "MULTIPLY"
+    color_mix.inputs["Fac"].default_value = 0.45
+
+    ramp = nodes.new(type="ShaderNodeValToRGB")
+    ramp.location = (-40, 20)
+    ramp.color_ramp.elements[0].position = 0.18
+    ramp.color_ramp.elements[1].position = 0.9
+    low_color, high_color = rng.choice(SEAWEED_PALETTES)
+    ramp.color_ramp.elements[0].color = low_color
+    ramp.color_ramp.elements[1].color = high_color
+
+    bump = nodes.new(type="ShaderNodeBump")
+    bump.location = (90, -180)
+    bump.inputs["Strength"].default_value = rng.uniform(0.02, 0.06)
+    bump.inputs["Distance"].default_value = 0.05
+
+    roughness_ramp = nodes.new(type="ShaderNodeMapRange")
+    roughness_ramp.location = (-40, -250)
+    roughness_ramp.inputs["To Min"].default_value = rng.uniform(0.32, 0.4)
+    roughness_ramp.inputs["To Max"].default_value = rng.uniform(0.58, 0.72)
+
+    links.new(coord.outputs["Object"], mapping.inputs["Vector"])
+    links.new(mapping.outputs["Vector"], wave.inputs["Vector"])
+    links.new(mapping.outputs["Vector"], noise.inputs["Vector"])
+    links.new(mapping.outputs["Vector"], separate_xyz.inputs["Vector"])
+    links.new(separate_xyz.outputs["Z"], height_ramp.inputs["Value"])
+    links.new(wave.outputs["Color"], mix_value.inputs[0])
+    links.new(noise.outputs["Fac"], mix_value.inputs[1])
+    links.new(height_ramp.outputs["Result"], color_mix.inputs["Color1"])
+    links.new(mix_value.outputs["Value"], color_mix.inputs["Color2"])
+    links.new(color_mix.outputs["Color"], ramp.inputs["Fac"])
+    links.new(noise.outputs["Fac"], bump.inputs["Height"])
+    links.new(wave.outputs["Color"], roughness_ramp.inputs["Value"])
+    links.new(ramp.outputs["Color"], principled.inputs["Base Color"])
+    links.new(roughness_ramp.outputs["Result"], principled.inputs["Roughness"])
+    links.new(bump.outputs["Normal"], principled.inputs["Normal"])
+    links.new(principled.outputs["BSDF"], output.inputs["Surface"])
+
+    return material
 
 
 def _centerline_point(t, height, noise_scale):
@@ -151,6 +270,7 @@ def build_seaweed_patch():
             noise_scale=noise_scale,
             width=width,
         )
+        obj.data.materials.append(build_seaweed_material(f"{obj.name}_Material", rng))
         obj["curve_seed"] = curve_seed
         obj["dramatic"] = dramatic
 
