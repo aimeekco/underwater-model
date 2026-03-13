@@ -38,6 +38,10 @@ class CoralGenerator:
                 socket.default_value = value
                 return
 
+    @staticmethod
+    def _lerp(a, b, t):
+        return a + ((b - a) * t)
+
     def _build_coral_material(self, name, rng):
         material = bpy.data.materials.new(name=name)
         material.use_nodes = True
@@ -324,7 +328,70 @@ class CoralGenerator:
 
         return vertices, faces
 
-    def _finish_coral_mesh(self, obj, mesh, rng, name):
+    @staticmethod
+    def _make_disk_geometry(radius, thickness, sides):
+        half_thickness = thickness * 0.5
+        vertices = []
+        faces = []
+
+        for z in (-half_thickness, half_thickness):
+            for side in range(sides):
+                angle = (math.tau * side) / sides
+                vertices.append((math.cos(angle) * radius, math.sin(angle) * radius, z))
+
+        bottom_center = len(vertices)
+        vertices.append((0.0, 0.0, -half_thickness))
+        top_center = len(vertices)
+        vertices.append((0.0, 0.0, half_thickness))
+
+        for side in range(sides):
+            next_side = (side + 1) % sides
+            bottom_a = side
+            bottom_b = next_side
+            top_a = side + sides
+            top_b = next_side + sides
+
+            faces.append((bottom_a, bottom_b, top_b, top_a))
+            faces.append((bottom_center, bottom_b, bottom_a))
+            faces.append((top_center, top_a, top_b))
+
+        return vertices, faces
+
+    @staticmethod
+    def _make_box_geometry(width, depth, height):
+        half_x = width * 0.5
+        half_y = depth * 0.5
+        half_z = height * 0.5
+        vertices = [
+            (-half_x, -half_y, -half_z),
+            (half_x, -half_y, -half_z),
+            (half_x, half_y, -half_z),
+            (-half_x, half_y, -half_z),
+            (-half_x, -half_y, half_z),
+            (half_x, -half_y, half_z),
+            (half_x, half_y, half_z),
+            (-half_x, half_y, half_z),
+        ]
+        faces = [
+            (0, 1, 2, 3),
+            (4, 5, 6, 7),
+            (0, 1, 5, 4),
+            (1, 2, 6, 5),
+            (2, 3, 7, 6),
+            (3, 0, 4, 7),
+        ]
+        return vertices, faces
+
+    def _glitch_vertices(self, vertices, rng, corruption_level, apply_glitch):
+        if apply_glitch is None or corruption_level <= 0.0:
+            return vertices
+        amount = 0.08 * corruption_level
+        glitched = []
+        for vertex in vertices:
+            glitched.append(apply_glitch(vertex, amount, rng))
+        return glitched
+
+    def _finish_coral_mesh(self, obj, mesh, rng, name, use_subsurf=True):
         mesh.update()
         mesh.polygons.foreach_set("use_smooth", [False] * len(mesh.polygons))
 
@@ -336,13 +403,14 @@ class CoralGenerator:
         bevel.segments = 2
         bevel.limit_method = "ANGLE"
 
-        subsurf = obj.modifiers.new(name="Subdivision", type="SUBSURF")
-        subsurf.levels = self.subsurf_levels
-        subsurf.render_levels = self.subsurf_levels + 1
+        if use_subsurf:
+            subsurf = obj.modifiers.new(name="Subdivision", type="SUBSURF")
+            subsurf.levels = self.subsurf_levels
+            subsurf.render_levels = self.subsurf_levels + 1
 
         return obj
 
-    def _create_mound_coral_mesh(self, name, rng):
+    def _create_mound_coral_mesh(self, name, rng, corruption_level=0.0, apply_glitch=None):
         mesh = bpy.data.meshes.new(f"{name}_Mesh")
         obj = bpy.data.objects.new(name, mesh)
 
@@ -368,10 +436,11 @@ class CoralGenerator:
                 rotation=(0.0, 0.0, rng.uniform(0.0, math.tau)),
             )
 
+        vertices = self._glitch_vertices(vertices, rng, corruption_level, apply_glitch)
         mesh.from_pydata(vertices, [], faces)
         return self._finish_coral_mesh(obj, mesh, rng, name)
 
-    def _create_tube_coral_mesh(self, name, rng):
+    def _create_tube_coral_mesh(self, name, rng, corruption_level=0.0, apply_glitch=None):
         mesh = bpy.data.meshes.new(f"{name}_Mesh")
         obj = bpy.data.objects.new(name, mesh)
 
@@ -413,10 +482,11 @@ class CoralGenerator:
                 rotation=(rng.uniform(-0.06, 0.06), rng.uniform(-0.06, 0.06), rng.uniform(0.0, math.tau)),
             )
 
+        vertices = self._glitch_vertices(vertices, rng, corruption_level, apply_glitch)
         mesh.from_pydata(vertices, [], faces)
         return self._finish_coral_mesh(obj, mesh, rng, name)
 
-    def _create_brain_coral_mesh(self, name, rng):
+    def _create_brain_coral_mesh(self, name, rng, corruption_level=0.0, apply_glitch=None):
         mesh = bpy.data.meshes.new(f"{name}_Mesh")
         obj = bpy.data.objects.new(name, mesh)
 
@@ -454,44 +524,122 @@ class CoralGenerator:
                 rotation=(rng.uniform(-0.04, 0.04), rng.uniform(-0.04, 0.04), rng.uniform(0.0, math.tau)),
             )
 
+        vertices = self._glitch_vertices(vertices, rng, corruption_level, apply_glitch)
         mesh.from_pydata(vertices, [], faces)
         return self._finish_coral_mesh(obj, mesh, rng, name)
 
-    def build_patch(self, collection, seed=None, origin=(0.0, 0.0, 0.0)):
-        rng = random.Random(seed)
+    def _create_hardware_stack_mesh(self, name, rng, corruption_level=1.0, apply_glitch=None):
+        mesh = bpy.data.meshes.new(f"{name}_Mesh")
+        obj = bpy.data.objects.new(name, mesh)
+
+        vertices = []
+        faces = []
+        z_offset = 0.0
+        layer_count = rng.randint(7, 14)
+        stack_types = []
+
+        for _ in range(layer_count):
+            if rng.random() < 0.5:
+                layer_vertices, layer_faces = self._make_disk_geometry(
+                    radius=rng.uniform(0.22, 0.58),
+                    thickness=rng.uniform(0.03, 0.09),
+                    sides=rng.randint(8, 14),
+                )
+                stack_types.append("cd")
+            else:
+                layer_vertices, layer_faces = self._make_box_geometry(
+                    width=rng.uniform(0.38, 0.88),
+                    depth=rng.uniform(0.32, 0.78),
+                    height=rng.uniform(0.04, 0.12),
+                )
+                stack_types.append("floppy")
+
+            rot = (
+                rng.uniform(-0.08, 0.08) * corruption_level,
+                rng.uniform(-0.08, 0.08) * corruption_level,
+                rng.uniform(-0.42, 0.42) * corruption_level,
+            )
+            offset = (
+                rng.uniform(-0.08, 0.08) * corruption_level,
+                rng.uniform(-0.08, 0.08) * corruption_level,
+                z_offset,
+            )
+            self._append_transformed_geometry(vertices, faces, layer_vertices, layer_faces, offset=offset, rotation=rot)
+            z_offset += rng.uniform(0.04, 0.1)
+
+        vertices = self._glitch_vertices(vertices, rng, corruption_level, apply_glitch)
+        mesh.from_pydata(vertices, [], faces)
+        finished = self._finish_coral_mesh(obj, mesh, rng, name, use_subsurf=False)
+        finished["stack_mix"] = ",".join(sorted(set(stack_types)))
+        return finished
+
+    def build_patch(
+        self,
+        collection,
+        seed=None,
+        origin=(0.0, 0.0, 0.0),
+        corruption_level=0.0,
+        apply_glitch=None,
+        rng=None,
+    ):
+        rng = rng or random.Random(seed)
         half_area = self.patch_area_size * 0.5
         generated_objects = []
 
         for index in range(self.cluster_count):
-            roll = rng.random()
-            if roll < self.tube_cluster_ratio:
-                coral_type = "tube"
-            elif roll < self.tube_cluster_ratio + self.brain_cluster_ratio:
-                coral_type = "brain"
-            else:
-                coral_type = "mound"
+            use_hardware_stack = rng.random() < corruption_level
 
-            if coral_type == "tube":
-                obj = self._create_tube_coral_mesh(f"Tube_Coral_{index:02d}", rng)
-            elif coral_type == "brain":
-                obj = self._create_brain_coral_mesh(f"Brain_Coral_{index:02d}", rng)
+            if use_hardware_stack:
+                obj = self._create_hardware_stack_mesh(
+                    name=f"Hardware_Stack_{index:02d}",
+                    rng=rng,
+                    corruption_level=corruption_level,
+                    apply_glitch=apply_glitch,
+                )
+                coral_type = "hardware_stack"
             else:
-                obj = self._create_mound_coral_mesh(f"Mound_Coral_{index:02d}", rng)
+                roll = rng.random()
+                if roll < self.tube_cluster_ratio:
+                    coral_type = "tube"
+                    obj = self._create_tube_coral_mesh(
+                        f"Tube_Coral_{index:02d}",
+                        rng,
+                        corruption_level=corruption_level,
+                        apply_glitch=apply_glitch,
+                    )
+                elif roll < self.tube_cluster_ratio + self.brain_cluster_ratio:
+                    coral_type = "brain"
+                    obj = self._create_brain_coral_mesh(
+                        f"Brain_Coral_{index:02d}",
+                        rng,
+                        corruption_level=corruption_level,
+                        apply_glitch=apply_glitch,
+                    )
+                else:
+                    coral_type = "mound"
+                    obj = self._create_mound_coral_mesh(
+                        f"Mound_Coral_{index:02d}",
+                        rng,
+                        corruption_level=corruption_level,
+                        apply_glitch=apply_glitch,
+                    )
+
             scale = rng.uniform(*self.cluster_scale_range)
-
+            rot_jitter = self._lerp(0.06, 0.2, corruption_level)
             obj.location = (
                 origin[0] + rng.uniform(-half_area, half_area),
                 origin[1] + rng.uniform(-half_area, half_area),
                 origin[2],
             )
             obj.rotation_euler = (
-                rng.uniform(-0.06, 0.06),
-                rng.uniform(-0.06, 0.06),
+                rng.uniform(-rot_jitter, rot_jitter),
+                rng.uniform(-rot_jitter, rot_jitter),
                 rng.uniform(0.0, math.tau),
             )
             obj.scale = (scale, scale, scale)
             obj["cluster_seed"] = rng.random()
             obj["coral_type"] = coral_type
+            obj["corruption_level"] = corruption_level
 
             collection.objects.link(obj)
             generated_objects.append(obj)

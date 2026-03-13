@@ -1,6 +1,5 @@
 import importlib
 import importlib.util
-import math
 import random
 import sys
 import types
@@ -77,12 +76,7 @@ SeaweedGenerator = _load_module("seaweed", "seaweed.py").SeaweedGenerator
 
 
 WORLD_COLLECTION_NAME = "FishStack_World"
-SECTOR_DEFINITIONS = (
-    ("Left", -30.0),
-    ("Forward", 0.0),
-    ("Right", 30.0),
-)
-GHOST_BOID_SECTORS = ("Forward", "Right")
+THREE_SECTOR_NAMES = ("Left", "Forward", "Right")
 
 
 def ensure_collection(name, parent=None):
@@ -123,9 +117,8 @@ def clear_collection_objects(collection):
                 if obj.data not in owned_meshes:
                     owned_meshes.append(obj.data)
                 for material in obj.data.materials:
-                    if material is not None:
-                        if material not in owned_materials:
-                            owned_materials.append(material)
+                    if material is not None and material not in owned_materials:
+                        owned_materials.append(material)
             bpy.data.objects.remove(obj, do_unlink=True)
 
         for child in target_collection.children:
@@ -143,291 +136,89 @@ def clear_collection_objects(collection):
             bpy.data.materials.remove(material)
 
 
-def _create_cube_mesh(name, size=2.0):
-    half_size = size * 0.5
-    vertices = [
-        (-half_size, -half_size, -half_size),
-        (half_size, -half_size, -half_size),
-        (half_size, half_size, -half_size),
-        (-half_size, half_size, -half_size),
-        (-half_size, -half_size, half_size),
-        (half_size, -half_size, half_size),
-        (half_size, half_size, half_size),
-        (-half_size, half_size, half_size),
-    ]
-    faces = [
-        (0, 1, 2, 3),
-        (4, 5, 6, 7),
-        (0, 1, 5, 4),
-        (1, 2, 6, 5),
-        (2, 3, 7, 6),
-        (3, 0, 4, 7),
-    ]
+class WorldGenerator:
+    def __init__(
+        self,
+        world_collection_name=WORLD_COLLECTION_NAME,
+        sector_spacing=20.0,
+        seaweed_generator=None,
+        coral_generator=None,
+    ):
+        self.world_collection_name = world_collection_name
+        self.sector_spacing = sector_spacing
+        self.seaweed_generator = seaweed_generator or SeaweedGenerator()
+        self.coral_generator = coral_generator or CoralGenerator()
 
-    mesh = bpy.data.meshes.new(f"{name}_Mesh")
-    mesh.from_pydata(vertices, [], faces)
-    mesh.update()
-    mesh.polygons.foreach_set("use_smooth", [False] * len(mesh.polygons))
-    return mesh
+    @staticmethod
+    def clamp01(value):
+        return max(0.0, min(1.0, float(value)))
 
+    @staticmethod
+    def apply_glitch(vector, amount, rng):
+        amount = WorldGenerator.clamp01(amount)
+        jitter_strength = 0.22 * amount
+        return (
+            vector[0] + rng.uniform(-jitter_strength, jitter_strength),
+            vector[1] + rng.uniform(-jitter_strength, jitter_strength),
+            vector[2] + rng.uniform(-jitter_strength, jitter_strength),
+        )
 
-def spawn_ruin_placeholders(collection, left_sector_center):
-    ruin_mesh = _create_cube_mesh("Ruin_CRT_Placeholder", size=2.4)
-    ruin_obj = bpy.data.objects.new("Ruin_CRT_Placeholder", ruin_mesh)
-    ruin_obj.location = (left_sector_center[0], left_sector_center[1], left_sector_center[2] + 1.2)
-    collection.objects.link(ruin_obj)
-    return ruin_obj
+    def purge_world(self):
+        world_collection = ensure_collection(self.world_collection_name)
+        clear_collection_objects(world_collection)
+        return world_collection
 
+    def _normalize_corruption_levels(self, corruption_levels):
+        if corruption_levels is None:
+            corruption_levels = [0.0, 0.5, 1.0]
 
-def _create_ghost_fish_mesh(name):
-    mesh = bpy.data.meshes.new(f"{name}_Mesh")
-    vertices = [
-        (0.0, 0.42, 0.0),
-        (-0.17, -0.08, 0.11),
-        (0.17, -0.08, 0.11),
-        (0.17, -0.08, -0.11),
-        (-0.17, -0.08, -0.11),
-        (0.0, -0.42, 0.0),
-    ]
-    faces = [
-        (0, 1, 2),
-        (0, 2, 3),
-        (0, 3, 4),
-        (0, 4, 1),
-        (5, 2, 1),
-        (5, 3, 2),
-        (5, 4, 3),
-        (5, 1, 4),
-    ]
-    mesh.from_pydata(vertices, [], faces)
-    mesh.update()
-    mesh.polygons.foreach_set("use_smooth", [False] * len(mesh.polygons))
-    return mesh
+        levels = [self.clamp01(value) for value in corruption_levels]
+        if not levels:
+            raise ValueError("corruption_levels must contain at least one value.")
+        return levels
 
+    @staticmethod
+    def _sector_name(index, total):
+        if total == 3:
+            return THREE_SECTOR_NAMES[index]
+        return f"Sector_{index:02d}"
 
-def _limit_vector(vec, max_length):
-    x, y, z = vec
-    length = math.sqrt((x * x) + (y * y) + (z * z))
-    if length <= max_length or length == 0.0:
-        return vec
-    scale = max_length / length
-    return (x * scale, y * scale, z * scale)
+    def _sector_center(self, index, total):
+        centered_index = index - ((total - 1) * 0.5)
+        return (centered_index * self.sector_spacing, 0.0, 0.0)
 
+    def generate_world(self, seed, corruption_levels=None):
+        levels = self._normalize_corruption_levels(corruption_levels)
+        world_collection = self.purge_world()
+        master_rng = random.Random(seed)
+        total = len(levels)
 
-def spawn_ghost_boids(
-    collection,
-    rng,
-    sector_center,
-    name_prefix="GhostFish",
-    count=30,
-    area_size=10.0,
-    frame_start=1,
-    frame_end=240,
-    frame_step=8,
-):
-    boids = []
-    half_area = area_size * 0.5
-    scene = bpy.context.scene
-    scene.frame_start = frame_start
-    scene.frame_end = max(scene.frame_end, frame_end)
-    scene.frame_preview_start = frame_start
-    scene.frame_preview_end = frame_end
+        for index, corruption_level in enumerate(levels):
+            sector_name = self._sector_name(index, total)
+            sector_collection = ensure_collection(f"Sector_{sector_name}", parent=world_collection)
+            sector_center = self._sector_center(index, total)
+            sector_collection["corruption_level"] = corruption_level
 
-    for index in range(count):
-        obj_name = f"{name_prefix}_{index:02d}"
-        mesh = _create_ghost_fish_mesh(obj_name)
-        obj = bpy.data.objects.new(obj_name, mesh)
-        collection.objects.link(obj)
+            seaweed_rng = random.Random(master_rng.randint(0, 10**9))
+            coral_rng = random.Random(master_rng.randint(0, 10**9))
 
-        position = [
-            sector_center[0] + rng.uniform(-half_area, half_area),
-            sector_center[1] + rng.uniform(-half_area, half_area),
-            sector_center[2] + rng.uniform(0.6, 3.4),
-        ]
-        velocity = [
-            rng.uniform(-0.14, 0.14),
-            rng.uniform(0.28, 0.62),
-            rng.uniform(-0.07, 0.07),
-        ]
-        boid_scale = rng.uniform(0.35, 0.9)
-        obj.scale = (boid_scale, boid_scale, boid_scale)
-        boids.append({"obj": obj, "position": position, "velocity": velocity})
-
-    neighbor_radius = 3.4
-    separation_weight = 0.1
-    alignment_weight = 0.075
-    cohesion_weight = 0.05
-    jitter_weight = 0.055
-    boundary_weight = 0.18
-    max_speed = 0.95
-
-    for boid in boids:
-        obj = boid["obj"]
-        velocity = boid["velocity"]
-        obj.location = tuple(boid["position"])
-        heading_xy = math.atan2(velocity[1], velocity[0]) - (math.pi * 0.5)
-        pitch = math.atan2(velocity[2], max(0.001, math.sqrt((velocity[0] * velocity[0]) + (velocity[1] * velocity[1]))))
-        obj.rotation_euler = (pitch, 0.0, heading_xy)
-        obj.hide_viewport = False
-        obj.hide_render = False
-        obj.keyframe_insert(data_path="location", frame=frame_start)
-        obj.keyframe_insert(data_path="rotation_euler", frame=frame_start)
-        obj.keyframe_insert(data_path="hide_viewport", frame=frame_start)
-        obj.keyframe_insert(data_path="hide_render", frame=frame_start)
-
-    for frame in range(frame_start + frame_step, frame_end + 1, frame_step):
-        for boid in boids:
-            position = boid["position"]
-            velocity = boid["velocity"]
-
-            neighbors = []
-            for other in boids:
-                if other is boid:
-                    continue
-                dx = other["position"][0] - position[0]
-                dy = other["position"][1] - position[1]
-                dz = other["position"][2] - position[2]
-                distance = math.sqrt((dx * dx) + (dy * dy) + (dz * dz))
-                if distance < neighbor_radius:
-                    neighbors.append((other, distance, dx, dy, dz))
-
-            sep = [0.0, 0.0, 0.0]
-            ali = [0.0, 0.0, 0.0]
-            coh = [0.0, 0.0, 0.0]
-
-            if neighbors:
-                for neighbor, distance, dx, dy, dz in neighbors:
-                    inv = 1.0 / max(distance, 0.0001)
-                    sep[0] -= dx * inv
-                    sep[1] -= dy * inv
-                    sep[2] -= dz * inv
-                    ali[0] += neighbor["velocity"][0]
-                    ali[1] += neighbor["velocity"][1]
-                    ali[2] += neighbor["velocity"][2]
-                    coh[0] += neighbor["position"][0]
-                    coh[1] += neighbor["position"][1]
-                    coh[2] += neighbor["position"][2]
-
-                count_inv = 1.0 / len(neighbors)
-                ali[0] = (ali[0] * count_inv) - velocity[0]
-                ali[1] = (ali[1] * count_inv) - velocity[1]
-                ali[2] = (ali[2] * count_inv) - velocity[2]
-                coh[0] = (coh[0] * count_inv) - position[0]
-                coh[1] = (coh[1] * count_inv) - position[1]
-                coh[2] = (coh[2] * count_inv) - position[2]
-
-            jitter = [
-                rng.uniform(-1.0, 1.0),
-                rng.uniform(-1.0, 1.0),
-                rng.uniform(-0.6, 0.6),
-            ]
-
-            boundary = [
-                sector_center[0] - position[0],
-                sector_center[1] - position[1],
-                (sector_center[2] + 1.8) - position[2],
-            ]
-
-            velocity[0] += (
-                (sep[0] * separation_weight)
-                + (ali[0] * alignment_weight)
-                + (coh[0] * cohesion_weight)
-                + (jitter[0] * jitter_weight)
-                + (boundary[0] * boundary_weight * 0.015)
-            )
-            velocity[1] += (
-                (sep[1] * separation_weight)
-                + (ali[1] * alignment_weight)
-                + (coh[1] * cohesion_weight)
-                + (jitter[1] * jitter_weight)
-                + (boundary[1] * boundary_weight * 0.015)
-                + 0.045
-            )
-            velocity[2] += (
-                (sep[2] * separation_weight)
-                + (ali[2] * alignment_weight)
-                + (coh[2] * cohesion_weight)
-                + (jitter[2] * jitter_weight)
-                + (boundary[2] * boundary_weight * 0.015)
-            )
-
-            velocity[:] = _limit_vector(velocity, max_speed)
-            position[0] += velocity[0]
-            position[1] += velocity[1]
-            position[2] = min(max(sector_center[2] + 0.4, position[2] + velocity[2]), sector_center[2] + 4.2)
-
-            if abs(position[0] - sector_center[0]) > half_area:
-                position[0] = sector_center[0] + rng.uniform(-half_area * 0.9, half_area * 0.9)
-            if abs(position[1] - sector_center[1]) > half_area:
-                position[1] = sector_center[1] + rng.uniform(-half_area * 0.9, half_area * 0.9)
-
-            obj = boid["obj"]
-            obj.location = (position[0], position[1], position[2])
-
-            heading_xy = math.atan2(velocity[1], velocity[0]) - (math.pi * 0.5)
-            pitch = math.atan2(velocity[2], max(0.001, math.sqrt((velocity[0] * velocity[0]) + (velocity[1] * velocity[1]))))
-            obj.rotation_euler = (pitch, 0.0, heading_xy)
-
-            obj.keyframe_insert(data_path="location", frame=frame)
-            obj.keyframe_insert(data_path="rotation_euler", frame=frame)
-
-            is_hidden = rng.random() < 0.08
-            obj.hide_viewport = is_hidden
-            obj.hide_render = is_hidden
-            obj.keyframe_insert(data_path="hide_viewport", frame=frame)
-            obj.keyframe_insert(data_path="hide_render", frame=frame)
-
-    for boid in boids:
-        action = boid["obj"].animation_data.action if boid["obj"].animation_data else None
-        if action is None:
-            continue
-        fcurves = getattr(action, "fcurves", None)
-        if fcurves is None:
-            # Blender's newer animation data model may not expose Action.fcurves.
-            # Keyframes are still valid; we simply skip interpolation overrides.
-            continue
-        for fcurve in fcurves:
-            data_path = getattr(fcurve, "data_path", "")
-            keyframe_points = getattr(fcurve, "keyframe_points", ())
-            if data_path in {"location", "rotation_euler"}:
-                for key in keyframe_points:
-                    key.interpolation = "LINEAR"
-            elif data_path in {"hide_viewport", "hide_render"}:
-                for key in keyframe_points:
-                    key.interpolation = "CONSTANT"
-
-    return [boid["obj"] for boid in boids]
-
-
-def generate_world(seed):
-    world_collection = ensure_collection(WORLD_COLLECTION_NAME)
-    clear_collection_objects(world_collection)
-
-    seaweed_generator = SeaweedGenerator()
-    coral_generator = CoralGenerator()
-    world_rng = random.Random(seed)
-
-    sector_centers = {}
-    for sector_name, x_offset in SECTOR_DEFINITIONS:
-        sector_collection = ensure_collection(f"Sector_{sector_name}", parent=world_collection)
-        sector_center = (x_offset, 0.0, 0.0)
-        sector_centers[sector_name] = sector_center
-
-        seaweed_seed = world_rng.randint(0, 10**9)
-        coral_seed = world_rng.randint(0, 10**9)
-        seaweed_generator.build_patch(collection=sector_collection, seed=seaweed_seed, origin=sector_center)
-        coral_generator.build_patch(collection=sector_collection, seed=coral_seed, origin=sector_center)
-        if sector_name in GHOST_BOID_SECTORS:
-            boid_seed = world_rng.randint(0, 10**9)
-            boid_rng = random.Random(boid_seed)
-            spawn_ghost_boids(
+            self.seaweed_generator.build_patch(
                 collection=sector_collection,
-                rng=boid_rng,
-                sector_center=sector_center,
-                name_prefix=f"{sector_name}_GhostFish",
-                count=30,
-                area_size=12.0,
+                origin=sector_center,
+                corruption_level=corruption_level,
+                apply_glitch=self.apply_glitch,
+                rng=seaweed_rng,
+            )
+            self.coral_generator.build_patch(
+                collection=sector_collection,
+                origin=sector_center,
+                corruption_level=corruption_level,
+                apply_glitch=self.apply_glitch,
+                rng=coral_rng,
             )
 
-    spawn_ruin_placeholders(world_collection, sector_centers["Left"])
-    return world_collection
+        return world_collection
+
+
+def generate_world(seed, corruption_levels=None):
+    return WorldGenerator().generate_world(seed, corruption_levels)
