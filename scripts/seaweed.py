@@ -197,23 +197,79 @@ class SeaweedGenerator:
             )
         )
 
-    def _configure_wave_modifier(self, modifier, corruption_level):
-        modifier.vertex_group = "Sway_Weight"
-        modifier.texture_coords = "GLOBAL"
-        modifier.use_x = True
-        modifier.use_y = False
-        modifier.speed = self._lerp(0.08, 1.35, corruption_level)
-        modifier.height = self._lerp(0.06, 0.22, corruption_level)
-        modifier.width = self._lerp(2.0, 0.5, corruption_level)
-        modifier.narrowness = self._lerp(0.8, 10.0, corruption_level)
+    @staticmethod
+    def _add_scene_frame_driver(target, data_path, expression):
+        fcurve = target.driver_add(data_path)
+        driver = fcurve.driver
+        driver.type = "SCRIPTED"
 
-        if corruption_level >= 0.5:
-            for attr, value in (("wave_profile", "SAW"), ("wave_type", "SAW")):
-                if hasattr(modifier, attr):
-                    try:
-                        setattr(modifier, attr, value)
-                    except Exception:
-                        pass
+        frame_var = driver.variables.new()
+        frame_var.name = "frame"
+        frame_target = frame_var.targets[0]
+        frame_target.id_type = "SCENE"
+        frame_target.id = bpy.context.scene
+        frame_target.data_path = "frame_current"
+
+        driver.expression = expression
+
+    def _configure_sway_shape_keys(self, obj, sway_weights, height, dramatic, corruption_level, rng):
+        obj.shape_key_add(name="Basis", from_mix=False)
+        primary_key = obj.shape_key_add(name="Sway_Primary", from_mix=False)
+        secondary_key = obj.shape_key_add(name="Sway_Secondary", from_mix=False)
+
+        primary_key.slider_min = -1.0
+        primary_key.slider_max = 1.0
+        secondary_key.slider_min = -1.0
+        secondary_key.slider_max = 1.0
+
+        primary_extent = height * self._lerp(0.085, 0.04, corruption_level) * (0.9 + dramatic * 0.3)
+        secondary_extent = primary_extent * self._lerp(0.42, 0.24, corruption_level) * rng.uniform(0.9, 1.15)
+        tip_drag = self._lerp(0.16, 0.08, corruption_level)
+        cross_pull = self._lerp(0.05, 0.025, corruption_level)
+
+        for vertex_index, sway_weight in enumerate(sway_weights):
+            bend = math.sin(sway_weight * math.pi * 0.5) ** 1.35
+            mid_belly = math.sin(sway_weight * math.pi) * 0.2
+            tip_bias = max(0.0, sway_weight - 0.18) ** 1.45
+
+            primary_data = primary_key.data[vertex_index].co
+            primary_data.x += primary_extent * bend
+            primary_data.y += primary_extent * tip_drag * tip_bias
+
+            secondary_data = secondary_key.data[vertex_index].co
+            secondary_data.y += secondary_extent * (bend + mid_belly)
+            secondary_data.x += secondary_extent * cross_pull * tip_bias
+
+        primary_amplitude = self._lerp(rng.uniform(0.72, 0.96), rng.uniform(0.35, 0.58), corruption_level)
+        primary_speed = self._lerp(rng.uniform(0.03, 0.05), rng.uniform(0.04, 0.07), corruption_level)
+        primary_phase = rng.uniform(0.0, math.tau)
+        primary_detail_speed = primary_speed * rng.uniform(0.42, 0.6)
+        primary_detail_phase = primary_phase + rng.uniform(0.6, 1.4)
+
+        secondary_amplitude = primary_amplitude * rng.uniform(0.35, 0.5)
+        secondary_speed = primary_speed * rng.uniform(1.35, 1.8)
+        secondary_phase = primary_phase + rng.uniform(0.9, 1.8)
+        secondary_detail_speed = secondary_speed * rng.uniform(0.45, 0.7)
+        secondary_detail_phase = secondary_phase + rng.uniform(0.5, 1.2)
+
+        self._add_scene_frame_driver(
+            primary_key,
+            "value",
+            (
+                f"{primary_amplitude:.4f} * "
+                f"(sin(frame * {primary_speed:.5f} + {primary_phase:.5f}) + "
+                f"0.35 * sin(frame * {primary_detail_speed:.5f} + {primary_detail_phase:.5f}))"
+            ),
+        )
+        self._add_scene_frame_driver(
+            secondary_key,
+            "value",
+            (
+                f"{secondary_amplitude:.4f} * "
+                f"(sin(frame * {secondary_speed:.5f} + {secondary_phase:.5f}) + "
+                f"0.28 * sin(frame * {secondary_detail_speed:.5f} + {secondary_detail_phase:.5f}))"
+            ),
+        )
 
     def create_seaweed_mesh(
         self,
@@ -223,6 +279,7 @@ class SeaweedGenerator:
         noise_scale,
         width,
         curvature,
+        dramatic=0.0,
         corruption_level=0.0,
         rng=None,
         apply_glitch=None,
@@ -285,15 +342,14 @@ class SeaweedGenerator:
         mesh.update()
         mesh.polygons.foreach_set("use_smooth", [False] * len(mesh.polygons))
 
-        sway_group = obj.vertex_groups.new(name="Sway_Weight")
-        for vertex_index, weight in enumerate(weights):
-            sway_group.add([vertex_index], weight, "REPLACE")
-        if len(weights) < len(vertices):
-            for vertex_index in range(len(weights), len(vertices)):
-                sway_group.add([vertex_index], 1.0, "REPLACE")
+        sway_weights = list(weights)
+        if len(sway_weights) < len(vertices):
+            sway_weights.extend([1.0] * (len(vertices) - len(sway_weights)))
 
-        wave_modifier = obj.modifiers.new(name="Sway_Wave", type="WAVE")
-        self._configure_wave_modifier(wave_modifier, corruption_level)
+        sway_group = obj.vertex_groups.new(name="Sway_Weight")
+        for vertex_index, weight in enumerate(sway_weights):
+            sway_group.add([vertex_index], weight, "REPLACE")
+        self._configure_sway_shape_keys(obj, sway_weights, height, dramatic, corruption_level, rng)
 
         return obj
 
@@ -353,6 +409,7 @@ class SeaweedGenerator:
                 noise_scale=noise_scale,
                 width=width,
                 curvature=curvature,
+                dramatic=dramatic,
                 corruption_level=corruption_level,
                 rng=rng,
                 apply_glitch=apply_glitch,
