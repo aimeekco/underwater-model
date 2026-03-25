@@ -13,11 +13,11 @@ class SeaweedGenerator:
 
     def __init__(
         self,
-        patch_count=40,
-        patch_area_size=10.0,
-        height_range=(1.8, 3.4),
-        width_range=(0.14, 0.5),
-        segment_range=(8, 12),
+        patch_count=180,
+        patch_area_size=20.0,
+        height_range=(1.8, 5.4),
+        width_range=(0.14, 0.6),
+        segment_range=(8, 24),
         noise_scale_range=(0.18, 0.42),
         scale_range=(0.9, 1.35),
         lean_range=(-0.06, 0.06),
