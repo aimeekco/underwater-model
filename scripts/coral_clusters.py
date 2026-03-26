@@ -14,8 +14,8 @@ class CoralGenerator:
 
     def __init__(
         self,
-        cluster_count=32,
-        patch_area_size=20.0,
+        cluster_count=80,
+        patch_area_size=40.0,
         cluster_scale_range=(0.85, 1.3),
         bevel_width_range=(0.008, 0.02),
         subsurf_levels=1,
