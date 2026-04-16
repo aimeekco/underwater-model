@@ -73,6 +73,8 @@ def _load_module(module_name, filename):
 
 CoralGenerator = _load_module("coral_clusters", "coral_clusters.py").CoralGenerator
 SeaweedGenerator = _load_module("seaweed", "seaweed.py").SeaweedGenerator
+SpongeGenerator = _load_module("sponges", "sponges.py").SpongeGenerator
+UrchinGenerator = _load_module("urchins", "urchins.py").UrchinGenerator
 
 
 WORLD_COLLECTION_NAME = "FishStack_World"
@@ -143,11 +145,15 @@ class WorldGenerator:
         sector_spacing=20.0,
         seaweed_generator=None,
         coral_generator=None,
+        sponge_generator=None,
+        urchin_generator=None,
     ):
         self.world_collection_name = world_collection_name
         self.sector_spacing = sector_spacing
         self.seaweed_generator = seaweed_generator or SeaweedGenerator()
         self.coral_generator = coral_generator or CoralGenerator()
+        self.sponge_generator = sponge_generator or SpongeGenerator()
+        self.urchin_generator = urchin_generator or UrchinGenerator()
 
     @staticmethod
     def clamp01(value):
@@ -201,6 +207,8 @@ class WorldGenerator:
 
             seaweed_rng = random.Random(master_rng.randint(0, 10**9))
             coral_rng = random.Random(master_rng.randint(0, 10**9))
+            sponge_rng = random.Random(master_rng.randint(0, 10**9))
+            urchin_rng = random.Random(master_rng.randint(0, 10**9))
 
             self.seaweed_generator.build_patch(
                 collection=sector_collection,
@@ -215,6 +223,20 @@ class WorldGenerator:
                 corruption_level=corruption_level,
                 apply_glitch=self.apply_glitch,
                 rng=coral_rng,
+            )
+            self.sponge_generator.build_patch(
+                collection=sector_collection,
+                origin=sector_center,
+                corruption_level=corruption_level,
+                apply_glitch=self.apply_glitch,
+                rng=sponge_rng,
+            )
+            self.urchin_generator.build_patch(
+                collection=sector_collection,
+                origin=sector_center,
+                corruption_level=corruption_level,
+                apply_glitch=self.apply_glitch,
+                rng=urchin_rng,
             )
 
         return world_collection

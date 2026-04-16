@@ -14,8 +14,8 @@ class CoralGenerator:
 
     def __init__(
         self,
-        cluster_count=80,
-        patch_area_size=40.0,
+        cluster_count=280,
+        patch_area_size=80.0,
         cluster_scale_range=(0.85, 1.3),
         bevel_width_range=(0.008, 0.02),
         subsurf_levels=1,
@@ -358,6 +358,38 @@ class CoralGenerator:
         return vertices, faces
 
     @staticmethod
+    def _make_ring_geometry(outer_radius, inner_radius, thickness, sides):
+        half_thickness = thickness * 0.5
+        vertices = []
+        faces = []
+        ring_starts = []
+
+        for z in (-half_thickness, half_thickness):
+            outer_start = len(vertices)
+            for side in range(sides):
+                angle = (math.tau * side) / sides
+                vertices.append((math.cos(angle) * outer_radius, math.sin(angle) * outer_radius, z))
+
+            inner_start = len(vertices)
+            for side in range(sides):
+                angle = (math.tau * side) / sides
+                vertices.append((math.cos(angle) * inner_radius, math.sin(angle) * inner_radius, z))
+
+            ring_starts.append((outer_start, inner_start))
+
+        bottom_outer, bottom_inner = ring_starts[0]
+        top_outer, top_inner = ring_starts[1]
+
+        for side in range(sides):
+            next_side = (side + 1) % sides
+            faces.append((bottom_outer + side, bottom_outer + next_side, top_outer + next_side, top_outer + side))
+            faces.append((bottom_inner + next_side, bottom_inner + side, top_inner + side, top_inner + next_side))
+            faces.append((top_outer + side, top_outer + next_side, top_inner + next_side, top_inner + side))
+            faces.append((bottom_inner + side, bottom_inner + next_side, bottom_outer + next_side, bottom_outer + side))
+
+        return vertices, faces
+
+    @staticmethod
     def _make_box_geometry(width, depth, height):
         half_x = width * 0.5
         half_y = depth * 0.5
@@ -409,6 +441,183 @@ class CoralGenerator:
             subsurf.render_levels = self.subsurf_levels + 1
 
         return obj
+
+    def _build_platter_layer_geometry(self, rng):
+        vertices = []
+        faces = []
+
+        thickness = rng.uniform(0.025, 0.07)
+        outer_radius = rng.uniform(0.24, 0.58)
+        inner_radius = outer_radius * rng.uniform(0.16, 0.3)
+        platter_vertices, platter_faces = self._make_ring_geometry(
+            outer_radius=outer_radius,
+            inner_radius=inner_radius,
+            thickness=thickness,
+            sides=rng.randint(12, 18),
+        )
+        self._append_transformed_geometry(vertices, faces, platter_vertices, platter_faces)
+
+        hub_height = thickness * rng.uniform(1.1, 2.4)
+        hub_vertices, hub_faces = self._make_disk_geometry(
+            radius=inner_radius * rng.uniform(0.65, 0.95),
+            thickness=hub_height,
+            sides=rng.randint(10, 16),
+        )
+        self._append_transformed_geometry(
+            vertices,
+            faces,
+            hub_vertices,
+            hub_faces,
+            offset=(0.0, 0.0, (hub_height - thickness) * 0.25),
+        )
+
+        if rng.random() < 0.45:
+            arm_vertices, arm_faces = self._make_box_geometry(
+                width=outer_radius * rng.uniform(0.45, 0.9),
+                depth=thickness * rng.uniform(0.9, 1.8),
+                height=thickness * rng.uniform(0.7, 1.5),
+            )
+            self._append_transformed_geometry(
+                vertices,
+                faces,
+                arm_vertices,
+                arm_faces,
+                offset=(outer_radius * rng.uniform(0.18, 0.42), 0.0, thickness * rng.uniform(0.0, 0.22)),
+                rotation=(0.0, 0.0, rng.uniform(-0.4, 0.4)),
+            )
+
+        return vertices, faces, "platter", max(thickness, hub_height)
+
+    def _build_floppy_layer_geometry(self, rng):
+        vertices = []
+        faces = []
+
+        width = rng.uniform(0.42, 0.92)
+        depth = rng.uniform(0.34, 0.82)
+        height = rng.uniform(0.04, 0.11)
+
+        body_vertices, body_faces = self._make_box_geometry(width=width, depth=depth, height=height)
+        self._append_transformed_geometry(vertices, faces, body_vertices, body_faces)
+
+        shutter_vertices, shutter_faces = self._make_box_geometry(
+            width=width * rng.uniform(0.68, 0.92),
+            depth=depth * rng.uniform(0.16, 0.24),
+            height=height * rng.uniform(0.3, 0.52),
+        )
+        self._append_transformed_geometry(
+            vertices,
+            faces,
+            shutter_vertices,
+            shutter_faces,
+            offset=(0.0, depth * rng.uniform(0.18, 0.28), height * rng.uniform(0.18, 0.32)),
+        )
+
+        label_vertices, label_faces = self._make_box_geometry(
+            width=width * rng.uniform(0.34, 0.74),
+            depth=depth * rng.uniform(0.18, 0.34),
+            height=height * rng.uniform(0.14, 0.28),
+        )
+        self._append_transformed_geometry(
+            vertices,
+            faces,
+            label_vertices,
+            label_faces,
+            offset=(
+                width * rng.uniform(-0.12, 0.12),
+                depth * rng.uniform(-0.18, -0.04),
+                height * rng.uniform(0.2, 0.34),
+            ),
+        )
+
+        if rng.random() < 0.55:
+            tab_vertices, tab_faces = self._make_box_geometry(
+                width=width * rng.uniform(0.08, 0.16),
+                depth=depth * rng.uniform(0.18, 0.32),
+                height=height * rng.uniform(0.22, 0.42),
+            )
+            self._append_transformed_geometry(
+                vertices,
+                faces,
+                tab_vertices,
+                tab_faces,
+                offset=(
+                    rng.choice((-1.0, 1.0)) * width * rng.uniform(0.28, 0.42),
+                    depth * rng.uniform(-0.12, 0.12),
+                    height * rng.uniform(0.08, 0.22),
+                ),
+            )
+
+        return vertices, faces, "floppy", height
+
+    def _build_cartridge_layer_geometry(self, rng):
+        vertices = []
+        faces = []
+
+        width = rng.uniform(0.46, 0.94)
+        depth = rng.uniform(0.28, 0.68)
+        height = rng.uniform(0.06, 0.16)
+
+        body_vertices, body_faces = self._make_box_geometry(width=width, depth=depth, height=height)
+        self._append_transformed_geometry(vertices, faces, body_vertices, body_faces)
+
+        spine_vertices, spine_faces = self._make_box_geometry(
+            width=width * rng.uniform(0.14, 0.28),
+            depth=depth * rng.uniform(0.88, 1.0),
+            height=height * rng.uniform(1.0, 1.4),
+        )
+        self._append_transformed_geometry(
+            vertices,
+            faces,
+            spine_vertices,
+            spine_faces,
+            offset=(
+                rng.choice((-1.0, 1.0)) * width * rng.uniform(0.26, 0.34),
+                0.0,
+                height * rng.uniform(0.02, 0.1),
+            ),
+        )
+
+        tooth_count = rng.randint(2, 4)
+        tooth_span = width * rng.uniform(0.32, 0.56)
+        for tooth_index in range(tooth_count):
+            tooth_t = 0.0 if tooth_count == 1 else tooth_index / (tooth_count - 1)
+            tooth_vertices, tooth_faces = self._make_box_geometry(
+                width=tooth_span / (tooth_count + 1),
+                depth=depth * rng.uniform(0.1, 0.16),
+                height=height * rng.uniform(0.16, 0.32),
+            )
+            self._append_transformed_geometry(
+                vertices,
+                faces,
+                tooth_vertices,
+                tooth_faces,
+                offset=(
+                    self._lerp(-tooth_span * 0.5, tooth_span * 0.5, tooth_t),
+                    -depth * rng.uniform(0.34, 0.42),
+                    -height * rng.uniform(0.1, 0.24),
+                ),
+            )
+
+        if rng.random() < 0.45:
+            ridge_vertices, ridge_faces = self._make_box_geometry(
+                width=width * rng.uniform(0.45, 0.8),
+                depth=depth * rng.uniform(0.12, 0.2),
+                height=height * rng.uniform(0.12, 0.26),
+            )
+            self._append_transformed_geometry(
+                vertices,
+                faces,
+                ridge_vertices,
+                ridge_faces,
+                offset=(0.0, depth * rng.uniform(0.18, 0.28), height * rng.uniform(0.2, 0.32)),
+            )
+
+        return vertices, faces, "cartridge", height
+
+    def _build_hardware_growth_geometry(self, rng):
+        if rng.random() < 0.5:
+            return self._build_platter_layer_geometry(rng)
+        return self._build_floppy_layer_geometry(rng)
 
     def _create_mound_coral_mesh(self, name, rng, corruption_level=0.0, apply_glitch=None):
         mesh = bpy.data.meshes.new(f"{name}_Mesh")
@@ -535,37 +744,62 @@ class CoralGenerator:
         vertices = []
         faces = []
         z_offset = 0.0
-        layer_count = rng.randint(7, 14)
+        layer_count = rng.randint(8, 16)
         stack_types = []
+        drift_x = rng.uniform(-0.04, 0.04) * corruption_level
+        drift_y = rng.uniform(-0.04, 0.04) * corruption_level
 
         for _ in range(layer_count):
-            if rng.random() < 0.5:
-                layer_vertices, layer_faces = self._make_disk_geometry(
-                    radius=rng.uniform(0.22, 0.58),
-                    thickness=rng.uniform(0.03, 0.09),
-                    sides=rng.randint(8, 14),
-                )
-                stack_types.append("cd")
+            layer_roll = rng.random()
+            if layer_roll < 0.34:
+                layer_vertices, layer_faces, layer_type, layer_height = self._build_platter_layer_geometry(rng)
+            elif layer_roll < 0.74:
+                layer_vertices, layer_faces, layer_type, layer_height = self._build_floppy_layer_geometry(rng)
             else:
-                layer_vertices, layer_faces = self._make_box_geometry(
-                    width=rng.uniform(0.38, 0.88),
-                    depth=rng.uniform(0.32, 0.78),
-                    height=rng.uniform(0.04, 0.12),
-                )
-                stack_types.append("floppy")
+                layer_vertices, layer_faces, layer_type, layer_height = self._build_cartridge_layer_geometry(rng)
+
+            stack_types.append(layer_type)
+            drift_x = (drift_x * 0.52) + (rng.uniform(-0.07, 0.07) * corruption_level)
+            drift_y = (drift_y * 0.52) + (rng.uniform(-0.07, 0.07) * corruption_level)
 
             rot = (
-                rng.uniform(-0.08, 0.08) * corruption_level,
-                rng.uniform(-0.08, 0.08) * corruption_level,
-                rng.uniform(-0.42, 0.42) * corruption_level,
+                rng.uniform(-0.14, 0.14) * corruption_level,
+                rng.uniform(-0.14, 0.14) * corruption_level,
+                rng.uniform(-0.62, 0.62) * corruption_level,
             )
             offset = (
-                rng.uniform(-0.08, 0.08) * corruption_level,
-                rng.uniform(-0.08, 0.08) * corruption_level,
+                drift_x + (rng.uniform(-0.06, 0.06) * corruption_level),
+                drift_y + (rng.uniform(-0.06, 0.06) * corruption_level),
                 z_offset,
             )
             self._append_transformed_geometry(vertices, faces, layer_vertices, layer_faces, offset=offset, rotation=rot)
-            z_offset += rng.uniform(0.04, 0.1)
+
+            if corruption_level > 0.45 and rng.random() < 0.28:
+                growth_vertices, growth_faces, growth_type, growth_height = self._build_hardware_growth_geometry(rng)
+                stack_types.append(f"{growth_type}_growth")
+                growth_angle = rng.uniform(0.0, math.tau)
+                growth_radius = rng.uniform(0.28, 0.72)
+                growth_offset = (
+                    offset[0] + (math.cos(growth_angle) * growth_radius),
+                    offset[1] + (math.sin(growth_angle) * growth_radius),
+                    z_offset + rng.uniform(-layer_height * 0.2, layer_height * 0.35),
+                )
+                growth_rot = (
+                    rng.uniform(-0.45, 0.45),
+                    rng.uniform(-0.45, 0.45),
+                    rng.uniform(0.0, math.tau),
+                )
+                self._append_transformed_geometry(
+                    vertices,
+                    faces,
+                    growth_vertices,
+                    growth_faces,
+                    offset=growth_offset,
+                    rotation=growth_rot,
+                )
+                z_offset += growth_height * rng.uniform(0.04, 0.12)
+
+            z_offset += layer_height * rng.uniform(0.72, 1.32)
 
         vertices = self._glitch_vertices(vertices, rng, corruption_level, apply_glitch)
         mesh.from_pydata(vertices, [], faces)

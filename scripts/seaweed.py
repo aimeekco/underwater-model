@@ -13,8 +13,8 @@ class SeaweedGenerator:
 
     def __init__(
         self,
-        patch_count=480,
-        patch_area_size=40.0,
+        patch_count=1000,
+        patch_area_size=80.0,
         height_range=(1.8, 5.4),
         width_range=(0.14, 0.6),
         segment_range=(8, 24),
