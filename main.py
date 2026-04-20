@@ -201,6 +201,9 @@ class WorldGenerator:
     @staticmethod
     def _resolve_surface_object(surface_object):
         if surface_object is None:
+            active_object = bpy.context.active_object
+            if active_object is not None and active_object.type == "MESH":
+                return active_object
             return None
         if isinstance(surface_object, str):
             return bpy.data.objects.get(surface_object)
@@ -213,6 +216,10 @@ class WorldGenerator:
         depsgraph = bpy.context.evaluated_depsgraph_get()
         eval_object = surface_object.evaluated_get(depsgraph)
         world_corners = [eval_object.matrix_world @ Vector(corner) for corner in eval_object.bound_box]
+        min_x = min(corner.x for corner in world_corners)
+        max_x = max(corner.x for corner in world_corners)
+        min_y = min(corner.y for corner in world_corners)
+        max_y = max(corner.y for corner in world_corners)
         min_z = min(corner.z for corner in world_corners)
         max_z = max(corner.z for corner in world_corners)
         ray_origin_z = max_z + self.surface_ray_margin
@@ -223,6 +230,10 @@ class WorldGenerator:
             "matrix_world": eval_object.matrix_world.copy(),
             "matrix_world_inv": eval_object.matrix_world.inverted_safe(),
             "normal_matrix": eval_object.matrix_world.inverted_safe().transposed().to_3x3(),
+            "min_x": min_x,
+            "max_x": max_x,
+            "min_y": min_y,
+            "max_y": max_y,
             "ray_origin_z": ray_origin_z,
             "ray_distance": ray_distance,
         }
@@ -258,19 +269,62 @@ class WorldGenerator:
             return 0.85
         return 1.0
 
-    def _conform_objects_to_surface(self, objects, surface_context):
+    @staticmethod
+    def _surface_sector_bounds(surface_context, index, total):
+        if surface_context is None:
+            return None
+
+        full_width = surface_context["max_x"] - surface_context["min_x"]
+        sector_width = full_width / max(1, total)
+        min_x = surface_context["min_x"] + (sector_width * index)
+        max_x = surface_context["min_x"] + (sector_width * (index + 1))
+
+        return {
+            "min_x": min_x,
+            "max_x": max_x,
+            "min_y": surface_context["min_y"],
+            "max_y": surface_context["max_y"],
+        }
+
+    def _find_surface_sample(self, surface_context, rng, sector_bounds):
+        if surface_context is None or sector_bounds is None:
+            return None
+
+        min_x = min(sector_bounds["min_x"], sector_bounds["max_x"])
+        max_x = max(sector_bounds["min_x"], sector_bounds["max_x"])
+        min_y = min(sector_bounds["min_y"], sector_bounds["max_y"])
+        max_y = max(sector_bounds["min_y"], sector_bounds["max_y"])
+
+        for _ in range(36):
+            sample = self._sample_surface(
+                surface_context,
+                rng.uniform(min_x, max_x),
+                rng.uniform(min_y, max_y),
+            )
+            if sample is not None:
+                return sample
+
+        return None
+
+    def _conform_objects_to_surface(self, objects, surface_context, rng, sector_bounds):
         if surface_context is None:
             return
 
-        world_up = Vector((0.0, 0.0, 1.0))
+        sample_cache = []
         for obj in objects:
-            sample = self._sample_surface(surface_context, obj.location.x, obj.location.y)
+            sample = self._find_surface_sample(surface_context, rng, sector_bounds)
             if sample is None:
+                if sample_cache:
+                    sample = rng.choice(sample_cache)
+            if sample is None:
+                obj.hide_viewport = True
+                obj.hide_render = True
                 continue
 
             hit_location, hit_normal = sample
+            sample_cache.append(sample)
             align_strength = self._surface_align_strength(obj)
-            target_up = world_up.lerp(hit_normal, align_strength).normalized()
+            target_up = Vector((0.0, 0.0, 1.0)).lerp(hit_normal, align_strength).normalized()
             align_quat = target_up.to_track_quat("Z", "Y")
             local_quat = obj.rotation_euler.to_quaternion()
 
@@ -297,6 +351,7 @@ class WorldGenerator:
             sector_collection = ensure_collection(f"Sector_{sector_name}", parent=world_collection)
             sector_center = self._sector_center(index, total)
             sector_collection["corruption_level"] = corruption_level
+            sector_bounds = self._surface_sector_bounds(surface_context, index, total)
 
             seaweed_rng = random.Random(master_rng.randint(0, 10**9))
             coral_rng = random.Random(master_rng.randint(0, 10**9))
@@ -310,7 +365,7 @@ class WorldGenerator:
                 apply_glitch=self.apply_glitch,
                 rng=seaweed_rng,
             )
-            self._conform_objects_to_surface(seaweed_objects, surface_context)
+            self._conform_objects_to_surface(seaweed_objects, surface_context, seaweed_rng, sector_bounds)
             coral_objects = self.coral_generator.build_patch(
                 collection=sector_collection,
                 origin=sector_center,
@@ -318,7 +373,7 @@ class WorldGenerator:
                 apply_glitch=self.apply_glitch,
                 rng=coral_rng,
             )
-            self._conform_objects_to_surface(coral_objects, surface_context)
+            self._conform_objects_to_surface(coral_objects, surface_context, coral_rng, sector_bounds)
 
             sponge_objects = self.sponge_generator.build_patch(
                 collection=sector_collection,
@@ -327,7 +382,7 @@ class WorldGenerator:
                 apply_glitch=self.apply_glitch,
                 rng=sponge_rng,
             )
-            self._conform_objects_to_surface(sponge_objects, surface_context)
+            self._conform_objects_to_surface(sponge_objects, surface_context, sponge_rng, sector_bounds)
 
             urchin_objects = self.urchin_generator.build_patch(
                 collection=sector_collection,
@@ -336,7 +391,7 @@ class WorldGenerator:
                 apply_glitch=self.apply_glitch,
                 rng=urchin_rng,
             )
-            self._conform_objects_to_surface(urchin_objects, surface_context)
+            self._conform_objects_to_surface(urchin_objects, surface_context, urchin_rng, sector_bounds)
 
         return world_collection
 
